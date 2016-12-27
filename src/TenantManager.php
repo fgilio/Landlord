@@ -120,12 +120,18 @@ class TenantManager
         if (!$this->enabled) {
             return;
         }
-
-        $this->modelTenants($model)->each(function ($id, $tenant) use ($model) {
-            $model->addGlobalScope($tenant, function (Builder $builder) use ($tenant, $id, $model) {
+   
+        // See https://github.com/HipsterJazzbo/Landlord/issues/49
+        $model->addGlobalScope('landlord-scope', function (Builder $builder) use ($model) {
+            $this->modelTenants($model)->each(function ($id, $tenant) use ($builder, $model) {
                 $builder->where($model->getQualifiedTenant($tenant), '=', $id);
             });
         });
+//         $this->modelTenants($model)->each(function ($id, $tenant) use ($model) {
+//             $model->addGlobalScope($tenant, function (Builder $builder) use ($tenant, $id, $model) {
+//                 $builder->where($model->getQualifiedTenant($tenant), '=', $id);
+//             });
+//         });
     }
 
     /**
