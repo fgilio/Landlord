@@ -3,6 +3,7 @@
 namespace HipsterJazzbo\Landlord;
 
 use HipsterJazzbo\Landlord\Exceptions\TenantColumnUnknownException;
+use HipsterJazzbo\Landlord\Exceptions\TenantNullIdException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
@@ -20,11 +21,17 @@ class TenantManager
     protected $tenants;
 
     /**
+     * @var Collection
+     */
+    protected $deferredModels;
+
+    /**
      * Landlord constructor.
      */
     public function __construct()
     {
         $this->tenants = collect();
+        $this->deferredModels = collect();
     }
 
     /**
@@ -51,12 +58,18 @@ class TenantManager
      * Add a tenant to scope by.
      *
      * @param string|Model $tenant
-     * @param mixed|null   $id
+     * @param mixed|null $id
+     *
+     * @throws TenantNullIdException
      */
     public function addTenant($tenant, $id = null)
     {
-        if (func_num_args() == 1) {
+        if (func_num_args() == 1 && $tenant instanceof Model) {
             $id = $tenant->getKey();
+        }
+
+        if (is_null($id)) {
+            throw new TenantNullIdException('$id must not be null');
         }
 
         $this->tenants->put($this->getTenantKey($tenant), $id);
@@ -121,17 +134,49 @@ class TenantManager
             return;
         }
    
+        if ($this->tenants->isEmpty()) {
+            // No tenants yet, defer scoping to a later stage
+            $this->deferredModels->push($model);
+            return;
+        }
+
         // See https://github.com/HipsterJazzbo/Landlord/issues/49
         $model->addGlobalScope('landlord-scope', function (Builder $builder) use ($model) {
             $this->modelTenants($model)->each(function ($id, $tenant) use ($builder, $model) {
+        // $this->modelTenants($model)->each(function ($id, $tenant) use ($model) {
+            // $model->addGlobalScope($tenant, function (Builder $builder) use ($tenant, $id, $model) {
+                if($this->getTenants()->first() && $this->getTenants()->first() != $id){
+                    $id = $this->getTenants()->first();
+                }
+
                 $builder->where($model->getQualifiedTenant($tenant), '=', $id);
             });
         });
-//         $this->modelTenants($model)->each(function ($id, $tenant) use ($model) {
-//             $model->addGlobalScope($tenant, function (Builder $builder) use ($tenant, $id, $model) {
-//                 $builder->where($model->getQualifiedTenant($tenant), '=', $id);
-//             });
-//         });
+    }
+
+    /**
+     * Applies applicable tenant scopes to deferred model booted before tenants setup.
+     */
+    public function applyTenantScopesToDeferredModels()
+    {
+        $this->deferredModels->each(function ($model) {
+            /* @var Model|BelongsToTenants $model */
+            $this->modelTenants($model)->each(function ($id, $tenant) use ($model) {
+                if (!isset($model->{$tenant})) {
+                    $model->setAttribute($tenant, $id);
+                }
+
+                $model->addGlobalScope($tenant, function (Builder $builder) use ($tenant, $id, $model) {
+                    if($this->getTenants()->first() && $this->getTenants()->first() != $id){
+                        $id = $this->getTenants()->first();
+                    }
+
+                    $builder->where($model->getQualifiedTenant($tenant), '=', $id);
+                });
+            });
+        });
+
+        $this->deferredModels = collect();
     }
 
     /**
@@ -142,6 +187,12 @@ class TenantManager
     public function newModel(Model $model)
     {
         if (!$this->enabled) {
+            return;
+        }
+
+        if ($this->tenants->isEmpty()) {
+            // No tenants yet, defer scoping to a later stage
+            $this->deferredModels->push($model);
             return;
         }
 
@@ -165,7 +216,7 @@ class TenantManager
     }
 
     /**
-     * Get the key for a tenant, either form a Model instance or a string.
+     * Get the key for a tenant, either from a Model instance or a string.
      *
      * @param string|Model $tenant
      *
